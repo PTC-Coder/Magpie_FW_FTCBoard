@@ -30,5 +30,5 @@ PROJ_LDFLAGS += -Wl,--print-memory-usage
 VPATH += SD_CARD
 IPATH += SD_CARD
 
-VPATH += RTT
-IPATH += RTT
+#VPATH += RTT
+#IPATH += RTT

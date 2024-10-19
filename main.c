@@ -20,7 +20,7 @@
 #include "sd_card.h"
 #include "sd_card_bank_ctl.h"
 
-#include "SEGGER_RTT.h"
+//#include "SEGGER_RTT.h"
 
 #include "nvic_table.h"
 #include "spi.h"
@@ -1788,6 +1788,10 @@ int main(void)
 		// printf("\nRecording Time DMA Blocks: %d \n\n", RECORDING_TIME_DMABLOCKS);
 		// printf("Data block consumed: %d\n", dataBlocksConsumedCount);
 		// printf("count dma irq: %d\n", count_dma_irq);
+		if(count_dma_irq % 3 == 0)
+		{
+			LED_Toggle(LED_GREEN);
+		}
 	}
 
 	printf("Stopping DMA ...\n\n");
