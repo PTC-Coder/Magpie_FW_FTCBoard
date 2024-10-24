@@ -20,7 +20,7 @@
 #include "sd_card.h"
 #include "sd_card_bank_ctl.h"
 
-#include "SEGGER_RTT.h"
+//#include "SEGGER_RTT.h"
 
 #include "nvic_table.h"
 #include "spi.h"
@@ -37,6 +37,7 @@
 #include "rtc.h"
 
 #include "./data_converters.h"
+#include "./deciFilters.h"
 #include "./periphDirectAccess.txt"
 
 
@@ -44,8 +45,8 @@
 //#define UNALIGNED_SUPPORT_DISABLE
 
 //#include "arm_fir_decimate_fast_q15_bob.h"
-#include "arm_fir_decimate_fast_q31_bob.h"
-#include "arm_fir_decimate_fast_q31_HB.h"
+// #include "arm_fir_decimate_fast_q31_bob.h"
+// #include "arm_fir_decimate_fast_q31_HB.h"
 
 /***** #defines  *****/
 
@@ -83,65 +84,11 @@
 #define buffLen_deci4x DMA_buffLen/4 // after 2 stages (2 - 2)
 #define buffLen_deci6x DMA_buffLen/6 // after 2 stages (3 - 2)
 #define buffLen_deci8x DMA_buffLen/8 // after 3 stages ( 2 - 2 - 2)
-#define buffLen_deci12x DMA_buffLen/12 // after 3 stages (3 - 2 - 2)
+//#define buffLen_deci12x DMA_buffLen/12 // after 3 stages (3 - 2 - 2)
 #define buffLen_deci16x DMA_buffLen/16 // after 4 stages (2 - 2 - 2 - 2)
-#define buffLen_deci24x DMA_buffLen/24 // after 4 stages (3 - 2 - 2 - 2)
-
-// magpie_new ; number of coefficients, and length of the state vector for all sample-rates
-// 16 k
-
-// decimation order: 3,2,2,2 All 2's are halfband
-#define deci_16k_numcoeffs_0 6
-#define deci_16k_numcoeffs_1 7
-#define deci_16k_numcoeffs_2 7
-#define deci_16k_numcoeffs_3 27
-
-// note filter state registers are shared between all sample-rates, so set to the laongest needed
-
-// 24 k
-// decimation order: 2,2,2,2 , the last 3 2's are halfband 2's are halfband
-
-#define deci_24k_numcoeffs_0 5
-#define deci_24k_numcoeffs_1 7
-#define deci_24k_numcoeffs_2 7
-#define deci_24k_numcoeffs_3 23
-
-
-// 32 k
-// note decimation factors are 3,2,2, the 2's are halfband
-
-#define deci_32k_numcoeffs_0 6
-#define deci_32k_numcoeffs_1 7
-#define deci_32k_numcoeffs_2 23
-
-
-// 48 k
-// decimation factors 2,2,2, the last 2 2's are hafband
-#define deci_48k_numcoeffs_0 5
-#define deci_48k_numcoeffs_1 7
-#define deci_48k_numcoeffs_2 23
-
-
-// 96 k
-// decimation factors 2,2, the last section is halfband
-#define deci_96k_numcoeffs_0 6
-#define deci_96k_numcoeffs_1 23
-
-
-
-// 192 k 30 dB
-// decimation is 2, not halfband. I could use halfband but then I can't scale the input down by -3dB.
-// If this could be done before the filter, then I would switch to halfband and save mips,time
+//#define buffLen_deci24x DMA_buffLen/24 // after 4 stages (3 - 2 - 2 - 2)
 
 #define deci_192k_numcoeffs_0 11
-// #define deci_state_len_192k_0 DMA_buffLen + deci_192k_numcoeffs_0 -1
-
-
-// try universal filter state memory to minimize memory useage (actual requirement usually lower)
-#define deci_stage0_state_len DMA_buffLen + 6 - 1
-#define deci_stage1_state_len buffLen_deci2x + 23 -1
-#define deci_stage2_state_len buffLen_deci4x + 23 -1
-#define deci_stage3_state_len buffLen_deci8x + 23 -1
 
 
 
@@ -206,12 +153,6 @@
 #define MXC_GPIO_PIN_OUT6  MXC_GPIO_PIN_6 //CS_EN pin
 #define MCX_GPIO_PIN_OUT22 MXC_GPIO_PIN_22   //MR pin for controlling ADC Clocking circuit
 
-// Parameters for PWM output
-#define PORT_PWM MXC_GPIO0 //port
-#define PIN_PWM MXC_GPIO_PIN_12 //pin
-#define FREQ 200000 // (Hz)
-#define DUTY_CYCLE 75 // (%)
-#define PWM_TIMER MXC_TMR0 // must change PWM_PORT and PWM_PIN if changed
 
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
@@ -300,8 +241,7 @@ mxc_spi_req_t SPI1_req; // struct for SPI int
 
 volatile uint32_t count_dma_irq = 0;
 volatile uint32_t dataBlocksDmaCount=0,dataBlocksConsumedCount=0;
-volatile uint8_t dataBlockWriteComplete=1; // init to 1 so the first dma interupt will work
-volatile uint32_t writeNotComplete = 0;
+//volatile FSIZE_t file_pos64 = 0;
 static uint8_t SD_write_buff[4*DMA_buffLen_bytes] = {0}; // up to 4 sd card dma interval stalls at 384k
 
 FATFS *fs; //FFat Filesystem Object
@@ -331,24 +271,24 @@ static q31_t dmaDestBuff_32bit[DMA_buffLen] = {0}; // same data but assembled ba
 #endif
 #ifdef TEST_DECIMATE
 // fill dmaDestBuff with values from Matlab-generated test file
-//#include "./decimate_test_16k.txt" // yes
-//#include "./decimate_test_24k.txt" // yes
-//#include "./decimate_test_32k.txt" // yes
+//#include "./decimate_test_sin_1k.txt" // yes
+//#include "./decimate_test_sin_xx.txt" // yes
+
+#include "./decimate_test_24k.txt" // yes
 //#include "./decimate_test_48k.txt" // yes
 //#include "./decimate_test_96k.txt" // yes
-//#include "./decimate_test_192k_30dB.txt"
+//#include "./decimate_test_192k.txt"
 #endif
 
 int mychannel = -1;
+
 // magpie_new ; enumeration list for all sample-rates
 typedef enum {
-		fs_384k,
-		fs_192k,
-		fs_96k,
-		fs_48k,
-		fs_32k,
-		fs_24k,
-		fs_16k
+		fs_384k_1ch,
+		fs_192k_1ch,
+		fs_96k_1ch,
+		fs_48k_1ch,
+		fs_24k_1ch,
 } FS_enum; // this is a variable 'type'
 
 static FS_enum magpie_FS; // use for switch statements
@@ -363,88 +303,16 @@ static uint32_t block_ptr_modulo_mask = 0x00000003;
 // so you can fit lots of blocks in the same SD buffer memory
 
 // decimated output buffers for various stages of the multi-rate filters
-static q31_t deci_stage0_out[buffLen_deci2x] = {0}; // 1st decimator output , dec 2 or 3
-static q31_t deci_stage1_out[buffLen_deci4x] = {0}; // 2nd decimator out, dec 4 or 6
-static q31_t deci_stage2_out[buffLen_deci8x] = {0}; // 3rd decimator out, dec 8 or 12
-static q31_t deci_stage3_out[buffLen_deci16x] = {0}; // 4th decimator out, dec 16 or 24
+static q31_t deci_stage0_out_left[buffLen_deci2x] = {0}; // 1st decimator output , dec 2 or 3
+static q31_t deci_stage1_out_left[buffLen_deci4x] = {0}; // 2nd decimator out, dec 4 or 6
+static q31_t deci_stage2_out_left[buffLen_deci8x] = {0}; // 3rd decimator out, dec 8 or 12
+static q31_t deci_stage3_out_left[buffLen_deci16x] = {0}; // 4th decimator out, dec 16 or 24
 
-// magpie_new, all the coefficients from the Matlab program
-// 16 k
-
-static q31_t firCoeffs_16k_0[deci_16k_numcoeffs_0] = {
-66940622, 234663147, 399187040, 399187040, 234663147, 66940622};
-
-static q31_t firCoeffs_16k_1[deci_16k_numcoeffs_1] = {
--72761205, 0, 609333412, 1073741824, 609333412, 0, -72761205};
-
-static q31_t firCoeffs_16k_2[deci_16k_numcoeffs_2] = {
--93393363, 0, 624899797, 1073741824, 624899797, 0, -93393363};
-
-static q31_t firCoeffs_16k_3[deci_16k_numcoeffs_3] = {
-14350378, 0, -22432788, 0, 39696342, 0, -66842481, 0, 113185102, 0, -213099907, 0, 678529663, 1073741824, 678529663, 0, -213099907, 0, 113185102, 0, -66842481, 0, 39696342, 0, -22432788, 0, 14350378};
-
-// 24k
-
-static q31_t firCoeffs_24k_0[deci_24k_numcoeffs_0] = {
-87026071, 382177371, 589816446, 382177371, 87026071};
-
-static q31_t firCoeffs_24k_1[deci_24k_numcoeffs_1] = {
--72761205, 0, 609333412, 1073741824, 609333412, 0, -72761205};
-
-static q31_t firCoeffs_24k_2[deci_24k_numcoeffs_2] = {
--93393363, 0, 624899797, 1073741824, 624899797, 0, -93393363};
-
-static q31_t firCoeffs_24k_3[deci_24k_numcoeffs_3] = {
--24688186, 0, 36136863, 0, -63560487, 0, 110521559, 0, -211345515, 0, 677934784, 1073741824, 677934784, 0, -211345515, 0, 110521559, 0, -63560487, 0, 36136863, 0, -24688186};
-
-// 32 k
-
-
-static q31_t firCoeffs_32k_0[deci_32k_numcoeffs_0] = {
-70889607, 230467457, 380341257, 380341257, 230467457, 70889607};
-
-static q31_t firCoeffs_32k_1[deci_32k_numcoeffs_1] = {
--93393363, 0, 624899797, 1073741824, 624899797, 0, -93393363};
-
-static q31_t firCoeffs_32k_2[deci_32k_numcoeffs_2] = {
--24688186, 0, 36136863, 0, -63560487, 0, 110521559, 0, -211345515, 0, 677934784, 1073741824, 677934784, 0, -211345515, 0, 110521559, 0, -63560487, 0, 36136863, 0, -24688186};
-
-
-// 48 k halfband
-
-
-static q31_t firCoeffs_48k_0[deci_48k_numcoeffs_0] = {
-90612570, 389972970, 596749769, 389972970, 90612570};
-
-static q31_t firCoeffs_48k_1[deci_48k_numcoeffs_1] = {
--93393363, 0, 624899797, 1073741824, 624899797, 0, -93393363};
-
-static q31_t firCoeffs_48k_2[deci_48k_numcoeffs_2] = {
--24688186, 0, 36136863, 0, -63560487, 0, 110521559, 0, -211345515, 0, 677934784, 1073741824, 677934784, 0, -211345515, 0, 110521559, 0, -63560487, 0, 36136863, 0, -24688186};
-
-// 96 k
-
-
-static q31_t firCoeffs_96k_0[deci_96k_numcoeffs_0] = {
--10807389, 213981735, 614165432, 614165432, 213981735, -10807389};
-
-static q31_t firCoeffs_96k_1[deci_96k_numcoeffs_1] = {
--24688186, 0, 36136863, 0, -63560487, 0, 110521559, 0, -211345515, 0, 677934784, 1073741824, 677934784, 0, -211345515, 0, 110521559, 0, -63560487, 0, 36136863, 0, -24688186};
-
-
-// 192 k
-
-static q31_t firCoeffs_192k_0[deci_192k_numcoeffs_0] = {
-70537572, 3275316, -138383646, 1734727, 471760716, 762876425, 471760716, 1734727, -138383646, 3275316, 70537572};
+//static q31_t ap_state_zm1=0;
+//static q31_t ap_state_zm0=0;
 
 
 // magpie_new , filter state variables as required by the cmsis functions, for all sample-rates.
-
-// universal state filter arrays , set to largest needed across sample-rates
-static q31_t firState_stage0[deci_stage0_state_len] = {0};
-static q31_t firState_stage1[deci_stage1_state_len] = {0};
-static q31_t firState_stage2[deci_stage2_state_len] = {0};
-static q31_t firState_stage3[deci_stage3_state_len] = {0};
 
 
 int location = 0;
@@ -480,49 +348,7 @@ volatile uint32_t errCount=0;
 
 // function prototypes
 
-// magpie_new - all the filter instances for every sample-rate
-// CMSIS instances. Note that the "fast" version
-// uses the same structure as the regular version
 
-// 16 k
-arm_fir_decimate_instance_q31 Sdeci_16k_0;
-arm_fir_decimate_instance_q31 Sdeci_16k_1;
-arm_fir_decimate_instance_q31 Sdeci_16k_2;
-arm_fir_decimate_instance_q31 Sdeci_16k_3;
-
-// 24 k
-arm_fir_decimate_instance_q31 Sdeci_24k_0;
-arm_fir_decimate_instance_q31 Sdeci_24k_1;
-arm_fir_decimate_instance_q31 Sdeci_24k_2;
-arm_fir_decimate_instance_q31 Sdeci_24k_3;
-
-// 32 k
-
-arm_fir_decimate_instance_q31 Sdeci_32k_0;
-arm_fir_decimate_instance_q31 Sdeci_32k_1;
-arm_fir_decimate_instance_q31 Sdeci_32k_2;
-
-// 48 k
-arm_fir_decimate_instance_q31 Sdeci_48k_0;
-arm_fir_decimate_instance_q31 Sdeci_48k_1;
-arm_fir_decimate_instance_q31 Sdeci_48k_2;
-
-
-// 48 k 2-ch test
-arm_fir_decimate_instance_q31 Sdeci_2ch_48k_0;
-arm_fir_decimate_instance_q31 Sdeci_2ch_48k_1;
-arm_fir_decimate_instance_q31 Sdeci_2ch_48k_2;
-
-
-// 96 k
-arm_fir_decimate_instance_q31 Sdeci_96k_0;
-arm_fir_decimate_instance_q31 Sdeci_96k_1;
-
-// 192 k
-arm_fir_decimate_instance_q31 Sdeci_192k_0;
-
-
-//arm_biquad_casd_df1_inst_q31 Siir;
 
 /**************************SD CARD Related ***************/
 // a buffer for writing strings into
@@ -960,12 +786,82 @@ void copy_dec_by_2(const q31_t *A, q31_t *B,uint32_t size) {
 	} while(--j);
 }
 
+void DMA_byte_to_32b( // takes 1.7ms, new design (7/28/24) with 50dB
+		uint8_t * pSrc,
+		q31_t * pDst,
+		uint32_t outLen) // outLen is in units of DMA 32-bit words (not bytes)
+{
+
+	uint32_t k;
+	uint32_t low,mid,hi,temp;
+	uint32_t in0,in1,in2,in3,in4,in5,in6,in7,in8,in9,in10,in11;
+	k = outLen >> 1; //loop will produce 2 at a time, do iterate over outLen
+
+
+	while(k > 0) {
+		in0 = *pSrc++;
+		in1 = *pSrc++;
+		in2 = *pSrc++;
+		in3 = *pSrc++;
+		in4 = *pSrc++;
+		in5 = *pSrc++;
+//		in6 = *pSrc++;
+//		in7 = *pSrc++;
+//		in8 = *pSrc++;
+//		in9 = *pSrc++;
+//		in10 = *pSrc++;
+//		in11 = *pSrc++;
+;
+//		low = in2 << 8;
+//		mid = in1 << 16;
+//		hi = in0 << 24;
+//		*pDst++  = low | mid | hi;
+//
+//
+//		low = in5 << 8;
+//		mid = in4 << 16;
+//		hi = in3 << 24;
+//
+//		*pDst++  = low | mid | hi;
+//
+//		low = in8;
+//				mid = in7;
+//				hi = in6;
+////		low = in8 << 8;
+////		mid = in7 << 16;
+////		hi = in6 << 24;
+//		temp = low | mid | hi;
+//
+//		*pDst++  = temp;
+//
+//		low = in11;
+//				mid = in10;
+//				hi = in9;
+////		low = in11 <<  8;
+////		mid = in10 << 16;
+////		hi = in9 << 24;
+//		temp = low | mid | hi;
+//
+//		*pDst++  = temp;
+
+// input from adc is big-endian (MS byte 1st) but ARM is little-endian
+		*pDst++  = (q31_t)((in0 << 24) | (in1 << 16) | (in2 << 8)); // use for 24-bit case
+		*pDst++  = (q31_t)((in3 << 24) | (in4 << 16) | (in5 << 8)); // use for 24-bit case
+//		*pDst++  = (q31_t)((in6 << 24) | (in7 << 16) | (in8 << 8)); // use for 24-bit case
+//		*pDst++  = (q31_t)((in9 << 24) | (in10 << 16) | (in11 << 8)); // use for 24-bit case
+		k--;
+
+	}
+
+}
+
+
 // ************************* This is where all the work gets done.
 // *** 8k input sample buffer appears here and persists for 20ms ***
 void DMA0_IRQHandler()
 {
 
-	uint32_t k,i,j;
+	uint32_t k,i,j,jj;
 	uint8_t dmaByte2,dmaByte1,dmaByte0;
     int flags;
 	//MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
@@ -979,6 +875,7 @@ void DMA0_IRQHandler()
 	k = DMA_buffLen; // loop counter
 	i = 0; // byte pointer
 	j=0; // word pointer
+	jj = 0; // decimate-by-2 output pointer
 	//MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
 
 	// DMA byte-to-signed 32 bit word assembly process
@@ -992,88 +889,63 @@ void DMA0_IRQHandler()
 
 	// magpie_new - everything in the isr
 	// don't over-write dmaDestBuff_32bit in test mode (it gets it's value from an include file)
-//#ifndef TEST_DECIMATE
+#ifndef TEST_DECIMATE
+//	MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
+//
+//	while(k > 0) { // all rates other than 384k, convert to q31
+//		// it's good to read the memory from the bottom up, because the low memory
+//		// will be the first to be over-written with new samples
+//		dmaByte2 = dmaDestBuff[i++]; //ms byte
+//		dmaByte1 = dmaDestBuff[i++]; //mid byte
+//		dmaByte0 = dmaDestBuff[i++]; //ls byte
+//		dmaDestBuff_32bit[j++]  = (q31_t)((dmaByte2 << 24) | (dmaByte1 << 16) | (dmaByte0 << 8)); // use for 24-bit case
+//		k--;
+//
+//	}
+//	MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
 
-	while(k > 0) { // all rates other than 384k, convert to q31
-		// it's good to read the memory from the bottom up, because the low memory
-		// will be the first to be over-written with new samples
-		dmaByte2 = dmaDestBuff[i++]; //ms byte
-		dmaByte1 = dmaDestBuff[i++]; //mid byte
-		dmaByte0 = dmaDestBuff[i++]; //ls byte
-		dmaDestBuff_32bit[j++]  = (q31_t)((dmaByte2 << 24) | (dmaByte1 << 16) | (dmaByte0 << 8)); // use for 24-bit case
-		k--;
-
-	}
+	MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
+	DMA_byte_to_32b(dmaDestBuff,dmaDestBuff_32bit,DMA_buffLen);
+	MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
 
 
-
-//#endif
+#endif
 
 	switch(magpie_FS) { // do the correct filter for each sample-rate
 
-		case fs_16k: // timing test, 5ms
+
+		case fs_24k_1ch:
 			MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-			arm_fir_decimate_fast_q31_bob(&Sdeci_16k_0,dmaDestBuff_32bit,deci_stage0_out,DMA_buffLen);// use 2x buffer to save mem (dont need a 3x buffer)
-			arm_fir_decimate_fast_q31_HB(&Sdeci_16k_1,deci_stage0_out,deci_stage1_out,buffLen_deci3x);
-			arm_fir_decimate_fast_q31_HB(&Sdeci_16k_2,deci_stage1_out,deci_stage2_out,buffLen_deci6x);
-			arm_fir_decimate_fast_q31_HB(&Sdeci_16k_3,deci_stage2_out,deci_stage3_out,buffLen_deci12x);
-			data_converters_q31_to_i16_24(deci_stage3_out,SD_write_buff+offsetDMA,buffLen_deci24x,magpie_bitdepth);
-			MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-			break;
-		case fs_24k: // timing test 6.5 ms
-			MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-			arm_fir_decimate_fast_q31_bob(&Sdeci_24k_0,dmaDestBuff_32bit,deci_stage0_out,DMA_buffLen);
-			arm_fir_decimate_fast_q31_HB(&Sdeci_24k_1,deci_stage0_out,deci_stage1_out,buffLen_deci2x);
-			arm_fir_decimate_fast_q31_HB(&Sdeci_24k_2,deci_stage1_out,deci_stage2_out,buffLen_deci4x);
-			arm_fir_decimate_fast_q31_HB(&Sdeci_24k_3,deci_stage2_out,deci_stage3_out,buffLen_deci8x);
-			data_converters_q31_to_i16_24(deci_stage3_out,SD_write_buff+offsetDMA,buffLen_deci16x,magpie_bitdepth);
+			decimate_16x_iirHB(dmaDestBuff_32bit,deci_stage3_out_left,buffLen_deci16x); // test the iir halfband
+			data_converters_q31_to_i16_24(deci_stage3_out_left,SD_write_buff+offsetDMA,buffLen_deci16x,magpie_bitdepth);
 			MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
 
 			break;
-		case fs_32k: // timing test 4.8 ms
+		case fs_48k_1ch:
+
+			//MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
+
+			// NEW and much faster ...
+			decimate_8x_iirHB(dmaDestBuff_32bit,deci_stage2_out_left,buffLen_deci8x); // test the iir halfband
+			data_converters_q31_to_i16_24(deci_stage2_out_left,SD_write_buff+offsetDMA,buffLen_deci8x,magpie_bitdepth);
+			//MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
+			break;
+
+
+		case fs_96k_1ch: // timing test 6.7ms
 			MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-			arm_fir_decimate_fast_q31_bob(&Sdeci_32k_0,dmaDestBuff_32bit,deci_stage0_out,DMA_buffLen); // use 2x buffer to save mem (dont need a 3x buffer)
-			arm_fir_decimate_fast_q31_HB(&Sdeci_32k_1,deci_stage0_out,deci_stage1_out,buffLen_deci3x);
-			arm_fir_decimate_fast_q31_HB(&Sdeci_32k_2,deci_stage1_out,deci_stage2_out,buffLen_deci6x);
-			data_converters_q31_to_i16_24(deci_stage2_out,SD_write_buff+offsetDMA,buffLen_deci12x,magpie_bitdepth);
+			decimate_4x_iirHB(dmaDestBuff_32bit,deci_stage1_out_left,buffLen_deci4x); // test the iir halfband
+			data_converters_q31_to_i16_24(deci_stage1_out_left,SD_write_buff+offsetDMA,buffLen_deci4x,magpie_bitdepth);
+			MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
+			break;
+		case fs_192k_1ch: // timing test 5.6 ms
+			MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
+			decimate_2x_iirHB(dmaDestBuff_32bit,deci_stage0_out_left,buffLen_deci2x); // test the iir halfband
+			data_converters_q31_to_i16_24(deci_stage0_out_left,SD_write_buff+offsetDMA,buffLen_deci2x,magpie_bitdepth);
 			MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
 
 			break;
-		case fs_48k:
-			// timing test, 03 or Ofast, 8 ms w/o halfband, 6ms with halfband, conversion takes only 0.1ms
-			// timing test, 02, 8 ms w/o halfband, 6.5ms with halfband, conversion takes only 0.1ms
-
-			MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-
-			//data_converters_i24_to_q31(dmaDestBuff, dmaDestBuff_32bit, DMA_buffLen_bytes);
-			// test the halfband, length 7
-			arm_fir_decimate_fast_q31_bob(&Sdeci_48k_0,dmaDestBuff_32bit,deci_stage0_out,DMA_buffLen);
-			arm_fir_decimate_fast_q31_HB(&Sdeci_48k_1,deci_stage0_out,deci_stage1_out,buffLen_deci2x);
-			arm_fir_decimate_fast_q31_HB(&Sdeci_48k_2,deci_stage1_out,deci_stage2_out,buffLen_deci4x);
-
-			data_converters_q31_to_i16_24(deci_stage2_out,SD_write_buff+offsetDMA,buffLen_deci8x,magpie_bitdepth);
-			MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-
-			break;
-		case fs_96k: // timing test 6.7ms
-			MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-
-			//data_converters_i24_to_q31(dmaDestBuff, dmaDestBuff_32bit, DMA_buffLen_bytes);
-			arm_fir_decimate_fast_q31_bob(&Sdeci_96k_0,dmaDestBuff_32bit,deci_stage0_out,DMA_buffLen);
-			arm_fir_decimate_fast_q31_HB(&Sdeci_96k_1,deci_stage0_out,deci_stage1_out,buffLen_deci2x);
-			data_converters_q31_to_i16_24(deci_stage1_out,SD_write_buff+offsetDMA,buffLen_deci4x,magpie_bitdepth);
-			MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-
-			break;
-		case fs_192k: // timing test 5.6 ms
-			MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-			//data_converters_i24_to_q31(dmaDestBuff, dmaDestBuff_32bit, DMA_buffLen_bytes);
-			arm_fir_decimate_fast_q31_bob(&Sdeci_192k_0,dmaDestBuff_32bit,deci_stage0_out,DMA_buffLen);
-			data_converters_q31_to_i16_24(deci_stage0_out,SD_write_buff+offsetDMA,buffLen_deci2x,magpie_bitdepth);
-			MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-
-			break;
-		case fs_384k: // no filtering, just copy the bytes
+		case fs_384k_1ch: // no filtering, just copy the bytes
 			k = DMA_buffLen; // loop counter
 			i = 0; // byte pointer
 			j=0; // word pointer
@@ -1094,19 +966,29 @@ void DMA0_IRQHandler()
 
 
 
-	//	MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
 
-	// timing test results; the 3 filters above take about 9ms, and the dma byte-to-signed-data conversion
-	// takes about 2ms. since we have 21.3 ms per DMA frame, we have about 10ms left.
-	// this should be plenty of time to blast out data to the the SD cards (I hope!)
-	// Note, this result is obtained with -o2 or -o3 compiler effort.
-	// With -o1 effort, the times above are worse by almost 2x (leaving very little time for anything else)
-	// With standard compiler effort, the dma processing does not finish at all!
-//
 
 	blockPtrModuloDMA = (blockPtrModuloDMA+1) & block_ptr_modulo_mask; // wraps to fit in spi write mem
-	offsetDMA = blockPtrModuloDMA*numBytesSDwrite;
+	offsetDMA = blockPtrModuloDMA*numBytesSDwrite; //adr max is 3*dmaBufflenBytes + dmaBufflenBytes  = 4*dmaBufflenBytes
 	dataBlocksDmaCount+= 1;
+
+	// keep a record of slow writes and errors; append to end of wave file in a seperate CHUNK, view with a hex editor
+	delta = dataBlocksDmaCount - dataBlocksConsumedCount; // 1 would be normal
+	if(delta > 1 && delta <= 3) numSlowWrites++;
+	// the following 6 lines are debug only to trace what happens during a stall. We can stall up to 16 DMA slots with available memory
+	if(delta > 3) { // enter whatever stall threshold you want here; over 16 will cause errors
+		numSDwriteErrors++;
+		dataBlocksConsumedCount = dataBlocksDmaCount-1; // made an error; reset the counter so we dont bother trying to catch up
+
+	}
+
+	// printf("\nRecording Time DMA Blocks: %d \n\n", RECORDING_TIME_DMABLOCKS);
+        // printf("Data block consumed: %d\n", dataBlocksConsumedCount);
+        // printf("count dma irq: %d\n", count_dma_irq);
+	if(count_dma_irq % 3 == 0)
+	{
+		LED_Toggle(LED_GREEN);
+	}
 
     count_dma_irq++;
 
@@ -1375,34 +1257,9 @@ int main(void)
 		
 
 
-	
-// magpie_new - init all the decimation filters. This allows you to change fs without re-compiling
-	arm_fir_decimate_init_q31(&Sdeci_16k_0,deci_16k_numcoeffs_0,3, &firCoeffs_16k_0[0],&firState_stage0[0],DMA_buffLen);
-	arm_fir_decimate_init_q31(&Sdeci_16k_1,deci_16k_numcoeffs_1,2, &firCoeffs_16k_1[0],&firState_stage1[0],buffLen_deci2x);
-	arm_fir_decimate_init_q31(&Sdeci_16k_2,deci_16k_numcoeffs_2,2, &firCoeffs_16k_2[0],&firState_stage2[0],buffLen_deci4x);
-	arm_fir_decimate_init_q31(&Sdeci_16k_3,deci_16k_numcoeffs_3,2, &firCoeffs_16k_3[0],&firState_stage3[0],buffLen_deci8x);
-
-	arm_fir_decimate_init_q31(&Sdeci_24k_0,deci_24k_numcoeffs_0,2, &firCoeffs_24k_0[0],&firState_stage0[0],DMA_buffLen);
-	arm_fir_decimate_init_q31(&Sdeci_24k_1,deci_24k_numcoeffs_1,2, &firCoeffs_24k_1[0],&firState_stage1[0],buffLen_deci2x);
-	arm_fir_decimate_init_q31(&Sdeci_24k_2,deci_24k_numcoeffs_2,2, &firCoeffs_24k_2[0],&firState_stage2[0],buffLen_deci4x);
-	arm_fir_decimate_init_q31(&Sdeci_24k_3,deci_24k_numcoeffs_3,2, &firCoeffs_24k_3[0],&firState_stage3[0],buffLen_deci8x);
-
-	arm_fir_decimate_init_q31(&Sdeci_32k_0,deci_32k_numcoeffs_0,3, &firCoeffs_32k_0[0],&firState_stage0[0],DMA_buffLen);
-	arm_fir_decimate_init_q31(&Sdeci_32k_1,deci_32k_numcoeffs_1,2, &firCoeffs_32k_1[0],&firState_stage1[0],buffLen_deci2x);
-	arm_fir_decimate_init_q31(&Sdeci_32k_2,deci_32k_numcoeffs_2,2, &firCoeffs_32k_2[0],&firState_stage2[0],buffLen_deci4x);
-
-	arm_fir_decimate_init_q31(&Sdeci_48k_0,deci_48k_numcoeffs_0,2, &firCoeffs_48k_0[0],&firState_stage0[0],DMA_buffLen);
-	arm_fir_decimate_init_q31(&Sdeci_48k_1,deci_48k_numcoeffs_1,2, &firCoeffs_48k_1[0],&firState_stage1[0],buffLen_deci2x);
-	arm_fir_decimate_init_q31(&Sdeci_48k_2,deci_48k_numcoeffs_2,2, &firCoeffs_48k_2[0],&firState_stage2[0],buffLen_deci4x);
-
-	arm_fir_decimate_init_q31(&Sdeci_96k_0,deci_96k_numcoeffs_0,2, &firCoeffs_96k_0[0],&firState_stage0[0],DMA_buffLen);
-	arm_fir_decimate_init_q31(&Sdeci_96k_1,deci_96k_numcoeffs_1,2, &firCoeffs_96k_1[0],&firState_stage1[0],buffLen_deci2x);
-
-	arm_fir_decimate_init_q31(&Sdeci_192k_0,deci_192k_numcoeffs_0,2, &firCoeffs_192k_0[0],&firState_stage0[0],DMA_buffLen);
-
 	// magpie_new - set sample-rate and bit depth
 	//******************* set sample rate ************************
-	magpie_FS =fs_384k; // use this to set sample rate; the variable FS is also set, for writing the wav header file
+	magpie_FS =fs_384k_1ch; // use this to set sample rate; the variable FS is also set, for writing the wav header file
 	//*************************************************************
 
 	//******************* set bit depth, 1=24 bits, 0=16 bits ************************
@@ -1410,46 +1267,42 @@ int main(void)
 	// *******************************************************************************
 
 	// check for invalid condition (384k, 16 bits)
-	if(magpie_FS == fs_384k && !magpie_bitdepth) {
-		printf("Error: Invalid Decimation Conditions.\n");
-		LED_On(LED_RED);
-		while(1) {}
+	if(magpie_FS == fs_384k_1ch && !magpie_bitdepth) {
+		printf("Invalid sample-rate and bit depth. 384k, 16-bit not allowed.\n");
+		while(1) {
+			LED_On(LED_RED);
+			MXC_Delay(100000);
+			LED_Off(LED_RED);
+		}
 	}
 
 	// magpie_new - set the number of bytes to write according to the sample-rate; also set the modulo for the spi slow-write scheme
 	switch(magpie_FS) {
 
-		case fs_16k:
-			FS = 16000;
-			if(magpie_bitdepth) numBytesSDwrite = 3*buffLen_deci24x; else numBytesSDwrite = 2*buffLen_deci24x;
-			block_ptr_modulo_mask = 0x00000007;// lower fs means smaller writes, which allows more blocks to be stored in the SD_write buffer
-			break;
-		case fs_24k:
+
+		case fs_24k_1ch:
 			FS = 24000;
 			if(magpie_bitdepth) numBytesSDwrite = 3*buffLen_deci16x; else numBytesSDwrite = 2*buffLen_deci16x;
-			block_ptr_modulo_mask = 0x00000007;// lower fs means smaller writes, which allows more blocks to be stored in the SD_write buffer
+			block_ptr_modulo_mask = 0x00000007;
 			break;
-		case fs_32k:
-			FS = 32000;
-			if(magpie_bitdepth) numBytesSDwrite = 3*buffLen_deci12x; else numBytesSDwrite = 2*buffLen_deci12x;
-			block_ptr_modulo_mask = 0x000000007;// lower fs means smaller writes, which allows more blocks to be stored in the SD_write buffer
-			break;
-		case fs_48k:
+
+		case fs_48k_1ch:
 			FS = 48000;
 			if(magpie_bitdepth) numBytesSDwrite = 3*buffLen_deci8x; else numBytesSDwrite = 2*buffLen_deci8x;
-			block_ptr_modulo_mask = 0x000000007;// lower fs means smaller writes, which allows more blocks to be stored in the SD_write buffer
+			block_ptr_modulo_mask = 0x000000007;
 			break;
-		case fs_96k:
+
+		case fs_96k_1ch:
 			FS = 96000;
 			if(magpie_bitdepth) numBytesSDwrite = 3*buffLen_deci4x; else numBytesSDwrite = 2*buffLen_deci4x;
-			block_ptr_modulo_mask = 0x00000007;// lower fs means smaller writes, which allows more blocks to be stored in the SD_write buffer
+			block_ptr_modulo_mask = 0x00000007;// lower fs means smaller writes, which allows more blocks to be stored in the SD_write buffer for greater SD card stall recovery
 			break;
-		case fs_192k:
+		case fs_192k_1ch:
 			FS = 192000;
 			if(magpie_bitdepth) numBytesSDwrite = 3*buffLen_deci2x; else numBytesSDwrite = 2*buffLen_deci2x;
-			block_ptr_modulo_mask = 0x0000003;// lower fs means smaller writes, which allows more blocks to be stored in the SD_write buffer
+			block_ptr_modulo_mask = 0x0000003;
 			break;
-		case fs_384k:
+		case fs_384k_1ch:
 			FS = 384000;
 			numBytesSDwrite = DMA_buffLen_bytes; // note, 384k and 16 bits not supported (yet)
 			block_ptr_modulo_mask = 0x00000003;// this case needs the most sdwrite memory, up to 4*(dma_length in bytes)
