@@ -38,7 +38,9 @@
 
 #include "./data_converters.h"
 #include "./deciFilters.h"
-#include "./periphDirectAccess.txt"
+#include "./periphDirectAccess.h"
+
+#include "afe_gain_ctl.h"
 
 
 // make sure the following is set BEFORE including the decimation filter code
@@ -97,6 +99,9 @@
 #define I2C_SLAVE_ADDR (0x98) // for a write, read is 99
 #define I2C_BYTES 2
 #define I2C_FREQ 100000
+
+#define MAX32666_I2C_BUS_1V8_PULLUPS MXC_I2C0_BUS0
+
 
 
 // I2C config for connecting to DS3231
@@ -165,6 +170,8 @@
 
 #define testWriteLen 32768
 
+#define DELAY_uSec (1000000)
+
 
 /****************** TypeDef ******************/
 /**
@@ -186,6 +193,16 @@ typedef enum{
     SDMUX_I2C_INIT_ERROR,
     SDMUX_I2C_FREQSET_ERROR
 } SDMUX_i2cError;
+
+/**
+ * @brief Enumerated AFE I2C error mode.
+ */
+typedef enum{
+    AFE_I2C_NO_ERROR,
+	MCU_MASTER_I2C_INIT_ERROR3,
+    AFE_I2C_INIT_ERROR,
+    AFE_I2C_FREQSET_ERROR
+} AFE_i2cError;
 
 
 /************************ Globals ******************************/
@@ -229,10 +246,10 @@ mxc_gpio_cfg_t gpio_outGreenLED; //pin 6 on feather, green LED on motherboard
 mxc_gpio_cfg_t gpio_in4; // use this instead of GPIO P0.3
 
 mxc_gpio_cfg_t gpio_in30; // the blue LED on feather (not on motherboard!)
-mxc_gpio_cfg_t gpio_out12; // pin 4 on feather, used for timing etsts
 
 mxc_gpio_cfg_t gpio_out1_6; // to control CS_EN pin
 mxc_gpio_cfg_t gpio_out22; // to control MR Pin
+mxc_gpio_cfg_t gpio_out30; // to control LDO_EN pin
 
 // structs for spi port
 mxc_spi_req_t SPI2_req_master_ctrl_write; // use this struct when using spi2 to write to the adc control port
@@ -1002,6 +1019,47 @@ void DMA0_IRQHandler()
 
 
 }
+/*********************************************************************************************
+*
+* @name     AFE_I2C_init
+*
+* @brief Function to initialize the USCI B1 peripheral. Setting this up
+*           as a I2C bus.
+*
+*           P0_6 - SCL
+*           P0_7 - SDA
+*
+* @return DS3231_i2cError enum type:   DS3231_I2C_NO_ERROR, 
+*                                      DS3231_I2C_INIT_ERROR,
+*                                      DS3231_I2C_FREQSET_ERROR
+*
+**********************************************************************************************/
+SDMUX_i2cError AFE_I2C_init()
+{
+	if (MXC_I2C_Init(MAX32666_I2C_BUS_1V8_PULLUPS, MAX32666_I2C_CFG_MASTER_MODE, 0) != E_NO_ERROR)
+	{
+		printf("-->AFE I2C initialization FAILED\n");
+		return MCU_MASTER_I2C_INIT_ERROR3;
+	}
+
+	// I2C pins default to VDDIO for the logical high voltage, we want VDDIOH for 3.3v pullups
+	const mxc_gpio_cfg_t i2c_0_pins = {
+		.port = MXC_GPIO0,
+		.mask = (MXC_GPIO_PIN_6 | MXC_GPIO_PIN_7),
+		.pad = MXC_GPIO_PAD_NONE,
+		.func = MXC_GPIO_FUNC_ALT1,
+		.vssel = MXC_GPIO_VSSEL_VDDIO,
+		.drvstr = MXC_GPIO_DRVSTR_0,
+	};
+	MXC_GPIO_Config(&i2c_0_pins);
+
+	if (MXC_I2C_SetFrequency(MAX32666_I2C_BUS_1V8_PULLUPS, MAX32666_I2C_CLK_SPEED) != MAX32666_I2C_CLK_SPEED)
+	{
+		printf("-->AFE I2C frequency set FAILED\n");
+		return AFE_I2C_FREQSET_ERROR;
+	}
+	return AFE_I2C_NO_ERROR;
+}
 
 /*********************************************************************************************
 *
@@ -1449,6 +1507,80 @@ int main(void)
 //		debug1 = 10;
 //	}
 
+	//Enable LDO. Set to HI  (P0.30) to enable 1V8
+	gpio_out30.port =MXC_GPIO_PORT_OUT0;
+	gpio_out30.mask= MCX_GPIO_PIN_OUT22;
+	gpio_out30.pad = MXC_GPIO_PAD_NONE;
+	gpio_out30.func = MXC_GPIO_FUNC_OUT;
+	gpio_out30.vssel = MXC_GPIO_VSSEL_VDDIO;
+	MXC_GPIO_Config(&gpio_out30);
+	MXC_GPIO_OutSet(gpio_out30.port,gpio_out30.mask); // set HI  for LD_EN to enable LDO 1v8
+
+	//Set AFE Gain
+
+	printf("Intializing AFE I2C ...");
+	if(AFE_I2C_NO_ERROR != AFE_I2C_init())
+	{	
+		printf("--> [FAILED] Unable to initialize I2C for AFE.\n");
+		LED_On(LED_RED);
+		return 1;		
+	} else {
+		//This will initialize AFE load switch to control power to op amp for ch1 and ch2 as OFF,  Both Mics are also OFF
+		if(AFE_I2C_NO_ERROR != afe_gain_ctl_init(MAX32666_I2C_BUS_1V8_PULLUPS, MAX32666_I2C_BUS_3V3_PULLUPS))
+		{
+			printf("--> [FAILED] Unable to initialize AFE driver.\n");
+			LED_On(LED_RED);
+			return 1;	
+		}
+		else
+			printf("--> [SUCCESS] ** Both AFE channels are off and both Mics are off **\n");
+	}
+	MXC_Delay(DELAY_uSec);
+
+
+	printf("Turning On AFE 1 and Mic 1 ...");
+	if(AFE_GAIN_CTL_ERR_OK != afe_control_enable(AFE_CONTROL_CHANNEL_0, false))
+	{
+		printf("--> [FAILED] Unable to enable AFE1 and Mic 1.\n");
+		LED_On(LED_RED);
+		return 1;
+	} else {
+		printf("--> [SUCCESS] AFE 1 and Mic 1 are enabled.\n");
+	}
+	
+    AFE_Gain_Setting_t intended_gain = AFE_CONTROL_GAIN_30dB;
+
+	printf("\nSetting gain to:   0x%02x\n", intended_gain);
+
+	// if(AFE_CONTROL_GAIN_0dB == intended_gain)
+	// {
+	// 	printf("\nTurning Off AFE_1 and Turning On Mic 1 ...");
+	// 	if(AFE_GAIN_CTL_ERR_OK != afe_control_enable(AFE_CONTROL_CHANNEL_0, true))
+	// 	{
+	// 		printf("--> [FAILED] Unable to disable AFE1 and enable Mic 1.\n");
+	// 		LED_On(LED_RED);
+	// 		return 1;
+	// 	} else {
+	// 		printf("--> [SUCCESS] AFE 1 is off and Mic 1 is enabled.\n");
+	// 	}
+	// }
+	// else
+	// {
+		const int res = afe_gain_ctl_set_gain(AFE_CONTROL_CHANNEL_0, intended_gain);
+		if (res != AFE_GAIN_CTL_ERR_OK)
+		{
+			printf("\n*** Error writing gain to MAX14662 ***\n");
+		}
+
+		volatile const AFE_Gain_Setting_t readback_gain = afe_gain_ctl_get_gain(AFE_CONTROL_CHANNEL_0);
+		printf("\nReading gain back: 0x%02x\n", readback_gain);
+
+		if (intended_gain != readback_gain)
+		{
+			printf("\n*** INTENDED GAIN AND GAIN READ BACK DO NOT MATCH ***\n");
+		}
+	// }
+
 	//Turn ON LED to indicate we are starting the recording.
 	LED_Off(LED_RED);
 	LED_Off(LED_BLUE);
@@ -1704,6 +1836,7 @@ int main(void)
 	//writing is done
 	MXC_GPIO_OutSet(gpio_out1_6.port,gpio_out1_6.mask); // set High for CS_EN to disable ADC 
 	MXC_GPIO_OutSet(gpio_out22.port, gpio_out22.mask);  // set High for MR to disable clocking circuit
+	MXC_GPIO_OutClr(gpio_out30.port,gpio_out30.mask); // set LO  for LD_EN to disable LDO 1v8
 
 	LED_Off(LED_RED);
 	//MB_LED(0);
