@@ -36,7 +36,8 @@
 
 #Locate this makefile directory.  
 MYCURDIR ?= $(strip $(dir $(abspath $(firstword $(MAKEFILE_LIST))))) 
-MYCURDIR := $(subst /c,C:,$(MYCURDIR))
+$(info $(shell tput setaf 3)Information: Current Directory is: $(MYCURDIR)$(shell tput sgr0))
+MYCURDIR := $(subst /c/,C:/,$(MYCURDIR))
 MYCURDIR := $(strip $(MYCURDIR))
 
 $(info $(shell tput setaf 3)Information: Current Directory is: $(MYCURDIR)$(shell tput sgr0))
@@ -68,7 +69,7 @@ TARGET_LC := $(subst M,m,$(subst A,a,$(subst X,x,$(TARGET))))
 endif
 
 # Default board.
-BOARD ?= CUSTOM
+BOARD ?= BSP
 
 # *******************************************************************************
 # Locate the MaximSDK
