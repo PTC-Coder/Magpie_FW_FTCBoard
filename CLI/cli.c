@@ -52,6 +52,8 @@
 #define UART_INIT(uart) MXC_UART_Init(uart, UART_BAUD)
 #elif TARGET_NUM == 32660
 #define UART_INIT(uart) MXC_UART_Init(uart, UART_BAUD, MAP_A)
+#elif TARGET_NUM == 32665 || TARGET_NUM == 32666
+#define UART_INIT(uart) MXC_UART_Init(uart, UART_BAUD, MAP_B)
 #elif TARGET_NUM == 32662
 #define UART_INIT(uart) MXC_UART_Init(uart, UART_BAUD, MXC_UART_APB_CLK, MAP_A)
 #else

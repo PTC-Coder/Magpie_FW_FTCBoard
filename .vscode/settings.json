@@ -92,7 +92,8 @@
     ],
     "files.associations": {
         "segger_rtt.h": "c",
-        "mxc_delay.h": "c"
+        "mxc_delay.h": "c",
+        "arm_math.h": "c"
     }
 }
 

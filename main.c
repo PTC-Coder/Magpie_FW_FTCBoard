@@ -42,22 +42,94 @@
 
 #include "afe_gain_ctl.h"
 
+#include "cli.h"
 
-// make sure the following is set BEFORE including the decimation filter code
-//#define UNALIGNED_SUPPORT_DISABLE
-
-//#include "arm_fir_decimate_fast_q15_bob.h"
-// #include "arm_fir_decimate_fast_q31_bob.h"
-// #include "arm_fir_decimate_fast_q31_HB.h"
-
-/***** #defines  *****/
-
+//CLI defines private defines and custom functions
 /********************************************************************************************/
+#define CUSTOM_COMMANDS_ARRAY_SIZE (7)  //Need to match # of commands in array
+#define MAX_STRING_SIZE 100
+#define CLI_UART MXC_UART1
+#define PRINT_LOG(msg) printf("%s\n\r", msg)
 
-//#define FIRST_SET_RTC true   //undefine this if you don't want to set the time on RTC
-							 //Change the values of struct tm newTime to the date you want to set
-
+/*********************************************************************************************/
+//CLI variables and custom functions
 /********************************************************************************************/
+static int toggle_event = 0;
+static int set_rtc_event = 0;
+static char color;
+int cli_led_toggle(int argc, char *argv[]);
+int cli_set_rtc(int argc, char *argv[]);
+int cli_set_params(int argc, char *argv[]);
+int cli_set_gain_ch0(int argc, char *argv[]);
+int cli_record(int argc, char *argv[]);
+int cli_check_datetime(int argc, char *argv[]);
+int cli_set_time_s(int argc, char *argv[]);
+
+int recordWav(int bit, int sample, int sd_slot);
+void checkDateTime(void);
+
+
+/******Global variables ****************/
+bool recording = false;
+bool isRTC_Init = false;
+int set_bit = 1;       //24-bit  
+int set_sample = 0;    //384kHz
+int set_sd_slot = 0;   //Slot 0
+int set_gain_ch0 = 1;  //40dB
+int set_record_time_s = 20; //20 seconds
+int set_DMA_blocks = 938;
+
+/* CLI Commands Array -------------------------------------------------------------------------------------------------*/
+
+const command_t commands[CUSTOM_COMMANDS_ARRAY_SIZE] = 
+    {
+        {
+			"set_rtc", 
+	        "[set_rtc] [year] [month] [day] [hour] [min] [sec]", 
+	        "Set Date Time to something, Year is always Year - 1900, Month is 0-11 so subtract 1 from the month, you want to set Time is in UTC so set appropriately, hour is 0-23. min is 0-59,sec is 0-59",
+	        cli_set_rtc,
+        },
+		{
+            "set_params",
+			"[set_params] [bit depth] [sample rate] [slot_number]",
+			"bitdepth(0=16bits,1=24bits), sample rate (0=384k,1=192k,2=96k,3=48k,4=24kb), sd card slot(0,1,2,3,4,5)",
+			cli_set_params,
+		},
+		{
+			"check_datetime",
+		    "[check_datetime] on command line",
+        	"Check current system date time from the RTC",
+		    cli_check_datetime,
+	    },
+		{
+			"led_toggle",
+		    "[led_toggle] [c]",
+        	"`led_toggle c` toggles LED color `c`, r = RED, g = GREEN, b = BLUE, a = ALL",
+		    cli_led_toggle,
+	    },
+		{
+			"set_time_s",
+		    "[set_time_s] [s]",
+        	"`set_time_s s` set audio recording time in seconds.  Minimum is 1 second and Maximum is 1,800 seconds",
+		    cli_set_time_s,
+	    },
+		{
+			"set_gain_ch0",
+		    "[set_gain_ch0] [gain]",
+        	"gain(1=5dB, 2=10dB, 3=15dB, 4=20dB, 5=25dB, 6=30dB, 7=35dB, 8=40dB)",
+		    cli_set_gain_ch0,
+	    },
+		{
+			"record",
+		    "[record] on command line",
+		    "record WAV file using defined bit, depth, and sd slot",
+		    cli_record,
+	    },
+    };
+
+#define FLOOR32U(f) ((uint32_t) (f))
+#define ROUND32U(f) FLOOR32U((f) + 0.5)
+
 // RECORDING TIME IN DMA Blocks (each DMA block is 21.33 ms)
 
 #define RECORDING_TIME_DMABLOCKS  1000//10000
@@ -1197,27 +1269,304 @@ void MB_LED(u_int8_t state)
 	
 }
 
-/*=================================================================================
-*]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
-*
-*								MAIN MODULE
-*
-*]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
-===================================================================================*/
-
-int main(void)
+void checkDateTime(void)
 {
-	for (size_t i = 0; i < 5; i++)
+	if(isRTC_Init)
 	{
-		LED_On(LED_RED);
-		LED_On(LED_BLUE);
-		LED_On(LED_GREEN);
-		MXC_Delay(100000);
-		LED_Off(LED_RED);
-		LED_Off(LED_BLUE);
-		LED_Off(LED_GREEN);
-		MXC_Delay(100000);
+		if (E_NO_ERROR != DS3231_RTC.read_datetime(&ds3231_datetime, ds3231_datetime_str)) {
+			printf("\nDS3231 read datetime error\n");
+		} else {
+			strftime((char*)output_msgBuffer, OUTPUT_MSG_BUFFER_SIZE, "**** Current System Date/Time: %F %TZ ****\r\n\r\n", &ds3231_datetime);
+			printf(output_msgBuffer);
+		}
 	}
+	else
+	{
+		printf("RTC is not initialized!\n");
+	}
+}
+
+/* Private CLI command function definitions --------------------------------------------------------------------------------------*/
+
+int cli_led_toggle(int argc, char *argv[])
+{
+	PRINT_LOG("LED toggle event called \r\n");
+    // fail is wrong number of args
+
+	 // fail is wrong number of args
+    if (argc != 2)
+    {
+        return -1;
+    }
+
+    // fail if the color given is more than 1 char, it should be 'r', 'g', 'b', or 'a' only
+    if (strlen(argv[1]) != 1)
+    {
+        return -1;
+    }
+
+    const char color = argv[1][0];
+
+    if (color == 'r')
+    {
+        LED_Toggle(LED_RED);
+    }
+    else if (color == 'g')
+    {
+        LED_Toggle(LED_GREEN);
+    }
+    else if (color == 'b')
+    {
+        LED_Toggle(LED_BLUE);
+    }
+	else if (color == 'a')
+    {
+        LED_Toggle(LED_RED);
+		LED_Toggle(LED_GREEN);
+		LED_Toggle(LED_BLUE);
+    }
+    else // the given arg was something other than 'r', 'g', 'b', or 'a'
+    {
+        return -1;
+    }
+  
+	return 0; // success
+	
+}
+
+int cli_set_rtc(int argc, char *argv[])
+{
+	//fail is wrong number of args.  First argv[0] is the command name coming in
+    if (argc != 7)
+    {
+		PRINT_LOG("Set RTC event failed \r\n");
+        return -1;
+    }
+	int mon,day,hour,min;
+	
+	struct tm newTime = {
+		.tm_year = atoi(argv[1]) - 1900U,
+		.tm_mon = atoi(argv[2]) - 1U,
+		.tm_mday = atoi(argv[3]),
+		.tm_hour = atoi(argv[4]),
+		.tm_min = atoi(argv[5]),
+		.tm_sec = atoi(argv[6])
+	};
+
+	
+	//Set Date Time on RTC. 
+	
+	if (E_NO_ERROR != DS3231_RTC.set_datetime(&newTime)) {
+		printf("\nDS3231 set time error\n");
+	} else {
+		strftime((char*)output_msgBuffer, OUTPUT_MSG_BUFFER_SIZE, "\n-->Set DateTime: %F %TZ\r\n", &newTime);
+		printf(output_msgBuffer);
+
+		checkDateTime();
+	}
+
+	return 0;
+}
+
+int cli_set_params(int argc, char *argv[])
+{
+	//fail is wrong number of args
+    if (argc != 4)
+    {
+		PRINT_LOG("set_recording_params event failed \r\n");
+        return -1;
+    }
+
+	set_bit = atoi(argv[1]);
+	set_sample = atoi(argv[2]);
+	set_sd_slot = atoi(argv[3]);
+
+	switch(set_sample) 
+	{
+		case fs_24k_1ch:
+			printf("Sample Rate: 24kHz\n");
+			break;
+		case fs_48k_1ch:
+			printf("Sample Rate: 48kHz\n");
+			break;
+		case fs_96k_1ch:
+			printf("Sample Rate: 96kHz\n");
+			break;
+		case fs_192k_1ch:
+			printf("Sample Rate: 196kHz\n");
+			break;
+		case fs_384k_1ch:
+			printf("Sample Rate: 384kHz\n");
+			break;
+		default:
+			printf("[Error] Invalid Sample Rate\n");
+			return -1;
+			break;
+	}
+
+	switch(set_bit) 
+	{
+		case 0:
+			printf("Bit Depth: 16-Bit\n");
+			break;
+		case 1:
+			printf("Bit Depth: 24-Bit\n");
+			break;
+		default:
+			printf("[Error] Invalid Bit Depth\n");
+			return -1;
+			break;
+	}
+
+	printf("SD slot: %d \n", set_sd_slot);  
+
+	return 0;
+}
+
+int cli_set_gain_ch0(int argc, char *argv[])
+{
+	//fail is wrong number of args
+	if (argc != 2)
+    {
+		PRINT_LOG("Set gain event failed \r\n");
+        return -1;
+    }
+
+	switch(atoi(argv[1]))
+	{
+		case 1:
+			set_gain_ch0 = AFE_CONTROL_GAIN_5dB;
+			printf("Gain on ADC CH #0 set to 5dB.\n");
+			break;
+		case 2:
+			set_gain_ch0 = AFE_CONTROL_GAIN_10dB;
+			printf("Gain on ADC CH #0 set to 10dB.\n");
+			break;
+		case 3:
+			set_gain_ch0 = AFE_CONTROL_GAIN_15dB;
+			printf("Gain on ADC CH #0 set to 15dB.\n");
+			break;
+		case 4:
+			set_gain_ch0 = AFE_CONTROL_GAIN_20dB;
+			printf("Gain on ADC CH #0 set to 20dB.\n");
+			break;
+		case 5:
+			set_gain_ch0 = AFE_CONTROL_GAIN_25dB;
+			printf("Gain on ADC CH #0 set to 25dB.\n");
+			break;
+		case 6:
+			set_gain_ch0 = AFE_CONTROL_GAIN_30dB;
+			printf("Gain on ADC CH #0 set to 30dB.\n");
+			break;
+		case 7:
+			set_gain_ch0 = AFE_CONTROL_GAIN_35dB;
+			printf("Gain on ADC CH #0 set to 35dB.\n");
+			break;
+		case 8:
+			set_gain_ch0 = AFE_CONTROL_GAIN_40dB;
+			printf("Gain on ADC CH #0 set to 40dB.\n");
+			break;
+		default:
+			set_gain_ch0 = AFE_CONTROL_GAIN_40dB;
+			printf("Invalid gain value provided. Set ADC CH #0 gain to default 40dB\n");			
+			break;			
+	}
+	return 0;  //Success
+}
+
+int cli_set_time_s(int argc, char *argv[])
+{
+	if (argc != 2)
+    {
+		PRINT_LOG("Set audio time length event failed \r\n");
+        return -1;
+    }	
+	int time_s = atoi(argv[1]);
+
+	if(time_s > 0 && time_s <= 1800)
+	{
+		set_record_time_s = time_s;
+		float time = (float)set_record_time_s;
+
+		set_DMA_blocks = ROUND32U(time * 1000 / 21.33);  // Round up
+		
+
+		printf("Recording Time set to %d second(s)\r\n", set_record_time_s);
+		printf("DMA Total Block Size set to %d\r\n", set_DMA_blocks);
+	}
+	else
+	{
+		PRINT_LOG("[ERROR] Recording time must be at least 1 second and up to 1,800 seconds\n");
+		return -1;
+	}
+}
+
+int cli_check_datetime(int argc, char *argv[])
+{
+	if (argc != 1)
+    {
+		PRINT_LOG("Set gain event failed \r\n");
+        return -1;
+    }
+
+	checkDateTime();
+	return 0;
+}
+
+int cli_record(int argc, char *argv[])
+{
+	PRINT_LOG("Recording WAV ... \r\n");
+    // fail is wrong number of args
+    if (argc != 1)
+    {		
+        return -1;		
+    }
+
+	switch(set_sample) 
+	{
+		case fs_24k_1ch:
+			printf("Sample Rate: 24kHz\n");
+			break;
+		case fs_48k_1ch:
+			printf("Sample Rate: 48kHz\n");
+			break;
+		case fs_96k_1ch:
+			printf("Sample Rate: 96kHz\n");
+			break;
+		case fs_192k_1ch:
+			printf("Sample Rate: 196kHz\n");
+			break;
+		case fs_384k_1ch:
+			printf("Sample Rate: 384kHz\n");
+			break;
+		default:
+			break;
+	}
+
+	switch(set_bit) 
+	{
+		case 0:
+			printf("Bit Depth: 16-Bit\n");
+			break;
+		case 1:
+			printf("Bit Depth: 24-Bit\n");
+			break;
+		default:
+			break;
+	}
+
+	printf("SD Card Slot: %d\n\n", set_sd_slot);
+
+	recording = true;	
+  
+	return 0; // success
+}
+
+/*************************************************************************************************************/
+int recordWav(int bit, int sample, int sd_slot)
+{
+	//reset recording flag
+	recording = false;
 
 	char metaBuffer[32] = {0};
 	MXC_Delay(MXC_DELAY_SEC(1));
@@ -1250,54 +1599,15 @@ int main(void)
 	static uint8_t stall;
 	static uint32_t ktrace = 0;
 
-    printf("\n\nInitializing .....\n");
-  
-	//Init DS3231 RTC peripheral
-	if(DS3231_I2C_NO_ERROR != DS3231_I2C_init())
-	{
-		printf("Unable to initialize DS3231 driver.\n");
-		LED_On(LED_RED);
-		return 1;
-	}
-
-
-	#ifdef FIRST_SET_RTC
-	// //Set Date Time to something
-	//Year is always Year - 1900
-	//Month is 0-11 so subtract 1 from the month you want to set
-	//Time is in UTC so set appropriately
-	// hour is 0-23
-	// min is 0-59
-	// sec is 0-59
-	struct tm newTime = {
-		.tm_year = 2024 - 1900U,
-		.tm_mon = 10 - 1U,
-		.tm_mday = 16,
-		.tm_hour = 2,
-		.tm_min = 56,
-		.tm_sec = 0
-	};
-
-	
-	//Set Date Time on RTC. 
-	
-	if (E_NO_ERROR != DS3231_RTC.set_datetime(&newTime)) {
-		printf("\nDS3231 set time error\n");
-	} else {
-		strftime((char*)output_msgBuffer, OUTPUT_MSG_BUFFER_SIZE, "\n-->Set DateTime: %F %TZ\r\n", &newTime);
-		printf(output_msgBuffer);
-	}
-	#endif
-
 	//Get Date Time from RTC
 	
 	if (E_NO_ERROR != DS3231_RTC.read_datetime(&ds3231_datetime, ds3231_datetime_str)) {
 		printf("\nDS3231 read datetime error\n");
 	} else {
-		strftime((char*)output_msgBuffer, OUTPUT_MSG_BUFFER_SIZE, "\n-->DateTime: %F %TZ\r\n", &ds3231_datetime);
+		strftime((char*)output_msgBuffer, OUTPUT_MSG_BUFFER_SIZE, "\n--> Current DateTime: %F %TZ\r\n", &ds3231_datetime);
 		printf(output_msgBuffer);
 
-		strftime((char*)output_msgBuffer, OUTPUT_MSG_BUFFER_SIZE, "\n-->FileStampTime: %Y%m%d_%H%M%SZ\r\n", &ds3231_datetime);
+		strftime((char*)output_msgBuffer, OUTPUT_MSG_BUFFER_SIZE, "\n--> File DateTime Stamp Format: %Y%m%d_%H%M%SZ\r\n", &ds3231_datetime);
 		printf(output_msgBuffer);
 
 		printf(ds3231_datetime_str);		
@@ -1317,11 +1627,11 @@ int main(void)
 
 	// magpie_new - set sample-rate and bit depth
 	//******************* set sample rate ************************
-	magpie_FS =fs_384k_1ch; // use this to set sample rate; the variable FS is also set, for writing the wav header file
+	magpie_FS = sample; // use this to set sample rate; the variable FS is also set, for writing the wav header file
 	//*************************************************************
 
 	//******************* set bit depth, 1=24 bits, 0=16 bits ************************
-	magpie_bitdepth = 1;
+	magpie_bitdepth = bit;
 	// *******************************************************************************
 
 	// check for invalid condition (384k, 16 bits)
@@ -1371,10 +1681,7 @@ int main(void)
 			break;
 	}
 
-
 	//*******************************************
-
-
 
 	//CARD writes, cluster size (== allocation size) may be 128Kb, whereas sector size is 512 bytes
 	cfg.bus_voltage = MXC_SDHC_Bus_Voltage_3_3;
@@ -1401,40 +1708,9 @@ int main(void)
 		printf("[Success] --> SD Card Bank Initialized.\n\n");
 	}
 	
-	printf("Selecting SD Card Slot 0 .....\n");
+	printf("Selecting SD Card Slot %d .....\n", set_sd_slot);
 	//Select Card Slot 0
-	sd_card_bank_ctl_enable_slot(0);
-
-
-    // sd_card_bank_ctl_read_and_cache_detect_pins();
-
-	// if (!sd_card_bank_ctl_active_card_is_inserted())
-    // {
-	// 	printf("No SD Card Detected in Slot 0.\n\n");
-	// 	LED_On(LED_RED);
-	// 	return 1;
-	// }else{
-	// 	printf("[Success] --> SD Card found in Slot 0.\n\n");
-	// }
-
-	// printf("Initialize SD Card in Slot 0 .....\n");
-	// // initialize and mount the card
-    // if (sd_card_init() != SD_CARD_ERROR_ALL_OK)
-    // {
-    //    	printf("[Failed] --> Unable to initialize SD Card.\n\n");
-	// 	LED_On(LED_RED);
-	// 	return 1;
-    // }else{
-	// 	printf("[Success] --> SD Card in Slot 0 Initialized.\n\n");
-	// }
-
-	// printf("Mounting SD Card in Slot 0 .....\n");
-	// if (sd_card_mount() != SD_CARD_ERROR_ALL_OK)
-    // {
-	// 	printf("[Failed] --> Unable to Mount SD Card.\n\n");
-	// 	LED_On(LED_RED);
-	// 	return 1;
-	// }
+	sd_card_bank_ctl_enable_slot(set_sd_slot);
 
 
 	if (MXC_SDHC_Init(&cfg) != E_NO_ERROR)
@@ -1443,16 +1719,22 @@ int main(void)
 		LED_On(LED_RED);
 		return 1;
 	}
-
 	
 	//wait for card to be inserted
+	bool firstCheck = true;
 	while (!MXC_SDHC_Card_Inserted()) {
+		if(firstCheck)
+		{
+			printf("SD Card not found in slot #%d\n", set_sd_slot);
+			printf("Please insert an exFAT formatted SD Card in slot #%d\n", set_sd_slot);
+			firstCheck = false;
+		}
 		LED_On(LED_RED);
 		MXC_Delay(500000);
 		LED_Off(LED_RED);
 		MXC_Delay(500000);
 	}
-	printf("Card inserted.\n");
+	printf("SD Card is found in slot #%d.\n\n", set_sd_slot);
 
 	//MB_LED(1);
 
@@ -1474,10 +1756,10 @@ int main(void)
 
 	// set up card to get it ready for a transaction
 	if (MXC_SDHC_Lib_InitCard(10) == E_NO_ERROR) {
-		printf("Card Initialized.\n");
+		printf("SD Card in slot #%d initialized.\n", set_sd_slot);
 		debug1 = 10;
 	} else {
-		printf("No card response! Remove card, reset MCU, and try again.\n");
+		printf("No card response! Remove card, reset Magpie Recorder, and try again.\n");
 		debug1 = 11;
 		LED_Off(LED_GREEN);
 		LED_On(LED_RED);
@@ -1548,7 +1830,7 @@ int main(void)
 		printf("--> [SUCCESS] AFE 1 and Mic 1 are enabled.\n");
 	}
 	
-    AFE_Gain_Setting_t intended_gain = AFE_CONTROL_GAIN_30dB;
+    AFE_Gain_Setting_t intended_gain = set_gain_ch0;
 
 	printf("\nSetting gain to:   0x%02x\n", intended_gain);
 
@@ -1755,8 +2037,8 @@ int main(void)
 	u_int32_t bw;
 
 	
-	printf("Data Recording to WAV ...\n\n");
-	while(count_dma_irq < RECORDING_TIME_DMABLOCKS) 
+	printf("%d Second(s) of Audio Recording to WAV ...\n\n", set_record_time_s);
+	while(count_dma_irq < set_DMA_blocks) 
 	{ // interupts happen here, count_dma_irq increments at fs/dmaBlockSize
 		while((dataBlocksDmaCount - dataBlocksConsumedCount) > 0) 
 		{ // there is normally a difference of 1, unless the SD card has stalled and the block writes have fallen behind
@@ -1847,7 +2129,71 @@ int main(void)
 
 	LED_On(LED_BLUE);
 
-	for(;;){}
+}
+
+
+/*=================================================================================
+*]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
+*
+*								MAIN MODULE
+*
+*]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
+===================================================================================*/
+
+int main(void)
+{
+	for (size_t i = 0; i < 5; i++)
+	{
+		LED_On(LED_RED);
+		LED_On(LED_BLUE);
+		LED_On(LED_GREEN);
+		MXC_Delay(100000);
+		LED_Off(LED_RED);
+		LED_Off(LED_BLUE);
+		LED_Off(LED_GREEN);
+		MXC_Delay(100000);
+	}
+
+	
+	printf("\n\n================  MAGPIE RECORDER ==========================\n\n");
+
+	printf("Initializing Real Time Clock .....\n");
+  
+	//Init DS3231 RTC peripheral
+	if(DS3231_I2C_NO_ERROR != DS3231_I2C_init())
+	{
+		printf("--> [FAILED] Unable to initialize DS3231 driver.\n");
+		LED_On(LED_RED);
+		return 1;
+	}
+	else 
+	{
+		isRTC_Init = true;
+		printf("--> [Success]\n");
+		checkDateTime();
+	}
+
+	printf("\nInitializing CLI Interface .....\n\n");
+	MXC_Delay(100000);
+
+	if(E_NO_ERROR != MXC_CLI_Init(CLI_UART, commands, CUSTOM_COMMANDS_ARRAY_SIZE))
+	{
+		printf("--> [FAILED] Unable to initialize CLI Interface.\n");
+		LED_On(LED_RED);
+		return 1;	
+	}
+	MXC_Delay(100000);
+
+	for(;;)
+	{
+		//this won't run inside CLI handle. DMA is not blocked here
+		if(recording)  
+		{
+			recordWav(set_bit, set_sample, set_sd_slot);
+		}
+		// everything is handled by the CLI
+		MXC_Delay(10000);
+	}
 
 } // end of main
 

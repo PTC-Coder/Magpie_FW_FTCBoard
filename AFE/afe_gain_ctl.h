@@ -34,14 +34,14 @@ typedef enum
  */
 typedef enum
 {   AFE_CONTROL_GAIN_0dB = 0x00,
-    AFE_CONTROL_GAIN_5dB = (1u << 7u),
-    AFE_CONTROL_GAIN_10dB = (1u << 6u),
-    AFE_CONTROL_GAIN_15dB = (1u << 5u),
-    AFE_CONTROL_GAIN_20dB = (1u << 4u),
-    AFE_CONTROL_GAIN_25dB = (1u << 3u),
-    AFE_CONTROL_GAIN_30dB = (1u << 2u),
-    AFE_CONTROL_GAIN_35dB = (1u << 1u),
-    AFE_CONTROL_GAIN_40dB = (1u << 0u),
+    AFE_CONTROL_GAIN_5dB = (1u << 7u),   //128
+    AFE_CONTROL_GAIN_10dB = (1u << 6u),  //64
+    AFE_CONTROL_GAIN_15dB = (1u << 5u),  //32
+    AFE_CONTROL_GAIN_20dB = (1u << 4u),  //16
+    AFE_CONTROL_GAIN_25dB = (1u << 3u),  //8
+    AFE_CONTROL_GAIN_30dB = (1u << 2u),  //4
+    AFE_CONTROL_GAIN_35dB = (1u << 1u),  //2
+    AFE_CONTROL_GAIN_40dB = (1u << 0u),  //1
     AFE_GAIN_SETTING_UNDEFINED,
 } AFE_Gain_Setting_t;
 
