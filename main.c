@@ -42,7 +42,7 @@
 
 #include "afe_gain_ctl.h"
 
-#include "cli.h"
+//#include "cli.h"
 
 //CLI defines private defines and custom functions
 /********************************************************************************************/
@@ -67,7 +67,7 @@ int cli_set_time_s(int argc, char *argv[]);
 
 int recordWav(int bit, int sample, int sd_slot);
 void checkDateTime(void);
-
+void set_recording_time_s(int time_s);
 
 /******Global variables ****************/
 bool recording = false;
@@ -81,51 +81,51 @@ int set_DMA_blocks = 938;
 
 /* CLI Commands Array -------------------------------------------------------------------------------------------------*/
 
-const command_t commands[CUSTOM_COMMANDS_ARRAY_SIZE] = 
-    {
-        {
-			"set_rtc", 
-	        "[set_rtc] [year] [month] [day] [hour] [min] [sec]", 
-	        "Set Date Time to something, Year is always Year - 1900, Month is 0-11 so subtract 1 from the month, you want to set Time is in UTC so set appropriately, hour is 0-23. min is 0-59,sec is 0-59",
-	        cli_set_rtc,
-        },
-		{
-            "set_params",
-			"[set_params] [bit depth] [sample rate] [slot_number]",
-			"bitdepth(0=16bits,1=24bits), sample rate (0=384k,1=192k,2=96k,3=48k,4=24kb), sd card slot(0,1,2,3,4,5)",
-			cli_set_params,
-		},
-		{
-			"check_datetime",
-		    "[check_datetime] on command line",
-        	"Check current system date time from the RTC",
-		    cli_check_datetime,
-	    },
-		{
-			"led_toggle",
-		    "[led_toggle] [c]",
-        	"`led_toggle c` toggles LED color `c`, r = RED, g = GREEN, b = BLUE, a = ALL",
-		    cli_led_toggle,
-	    },
-		{
-			"set_time_s",
-		    "[set_time_s] [s]",
-        	"`set_time_s s` set audio recording time in seconds.  Minimum is 1 second and Maximum is 1,800 seconds",
-		    cli_set_time_s,
-	    },
-		{
-			"set_gain_ch0",
-		    "[set_gain_ch0] [gain]",
-        	"gain(1=5dB, 2=10dB, 3=15dB, 4=20dB, 5=25dB, 6=30dB, 7=35dB, 8=40dB)",
-		    cli_set_gain_ch0,
-	    },
-		{
-			"record",
-		    "[record] on command line",
-		    "record WAV file using defined bit, depth, and sd slot",
-		    cli_record,
-	    },
-    };
+// const command_t commands[CUSTOM_COMMANDS_ARRAY_SIZE] = 
+//     {
+//         {
+// 			"set_rtc", 
+// 	        "[set_rtc] [year] [month] [day] [hour] [min] [sec]", 
+// 	        "Set Date Time to something, Year is always Year - 1900, Month is 0-11 so subtract 1 from the month, you want to set Time is in UTC so set appropriately, hour is 0-23. min is 0-59,sec is 0-59",
+// 	        cli_set_rtc,
+//         },
+// 		{
+//             "set_params",
+// 			"[set_params] [bit depth] [sample rate] [slot_number]",
+// 			"bitdepth(0=16bits,1=24bits), sample rate (0=384k,1=192k,2=96k,3=48k,4=24kb), sd card slot(0,1,2,3,4,5)",
+// 			cli_set_params,
+// 		},
+// 		{
+// 			"check_datetime",
+// 		    "[check_datetime] on command line",
+//         	"Check current system date time from the RTC",
+// 		    cli_check_datetime,
+// 	    },
+// 		{
+// 			"led_toggle",
+// 		    "[led_toggle] [c]",
+//         	"`led_toggle c` toggles LED color `c`, r = RED, g = GREEN, b = BLUE, a = ALL",
+// 		    cli_led_toggle,
+// 	    },
+// 		{
+// 			"set_time_s",
+// 		    "[set_time_s] [s]",
+//         	"`set_time_s s` set audio recording time in seconds.  Minimum is 1 second and Maximum is 1,800 seconds",
+// 		    cli_set_time_s,
+// 	    },
+// 		{
+// 			"set_gain_ch0",
+// 		    "[set_gain_ch0] [gain]",
+//         	"gain(1=5dB, 2=10dB, 3=15dB, 4=20dB, 5=25dB, 6=30dB, 7=35dB, 8=40dB)",
+// 		    cli_set_gain_ch0,
+// 	    },
+// 		{
+// 			"record",
+// 		    "[record] on command line",
+// 		    "record WAV file using defined bit, depth, and sd slot",
+// 		    cli_record,
+// 	    },
+//     };
 
 #define FLOOR32U(f) ((uint32_t) (f))
 #define ROUND32U(f) FLOOR32U((f) + 0.5)
@@ -1501,6 +1501,26 @@ int cli_set_time_s(int argc, char *argv[])
 	}
 }
 
+void set_recording_time_s(int time_s)
+{
+	if(time_s > 0 && time_s <= 1800)
+	{
+		set_record_time_s = time_s;
+		float time = (float)set_record_time_s;
+
+		set_DMA_blocks = ROUND32U(time * 1000 / 21.33);  // Round up
+		
+
+		printf("Recording Time set to %d second(s)\r\n", set_record_time_s);
+		printf("DMA Total Block Size set to %d\r\n", set_DMA_blocks);
+	}
+	else
+	{
+		PRINT_LOG("[ERROR] Recording time must be at least 1 second and up to 1,800 seconds\n");
+		return -1;
+	}
+}
+
 int cli_check_datetime(int argc, char *argv[])
 {
 	if (argc != 1)
@@ -2173,16 +2193,26 @@ int main(void)
 		checkDateTime();
 	}
 
-	printf("\nInitializing CLI Interface .....\n\n");
-	MXC_Delay(100000);
+	// printf("\nInitializing CLI Interface .....\n\n");
+	// MXC_Delay(100000);
 
-	if(E_NO_ERROR != MXC_CLI_Init(CLI_UART, commands, CUSTOM_COMMANDS_ARRAY_SIZE))
-	{
-		printf("--> [FAILED] Unable to initialize CLI Interface.\n");
-		LED_On(LED_RED);
-		return 1;	
-	}
-	MXC_Delay(100000);
+	// if(E_NO_ERROR != MXC_CLI_Init(CLI_UART, commands, CUSTOM_COMMANDS_ARRAY_SIZE))
+	// {
+	// 	printf("--> [FAILED] Unable to initialize CLI Interface.\n");
+	// 	LED_On(LED_RED);
+	// 	return 1;	
+	// }
+	// MXC_Delay(100000);
+
+	set_bit = 1;  //(16-bit = 0, 24-bit = 1)
+	set_sample = fs_384k_1ch;    //(fs_24k_1ch, fs_48k_1ch, fs_96k_1ch, fs_192k_1ch, fs_384k_1ch)
+	set_sd_slot = 0;  //(0, 1, 2, 5, 4, 3)  //The slot order on the physical board from left to right.  0 is near the mic input connector
+	set_gain_ch0 = AFE_CONTROL_GAIN_40dB;   //AFE_CONTROL_GAIN_5db to AFE_CONTROL_GAIN_40dB  increment of 5dB (5, 10, 15, 20, 25, 30, 35, 40)
+	set_recording_time_s(20); //this function will translate to DMA blocks
+
+	//This will start the recording 
+	recording  = 1;
+
 
 	for(;;)
 	{
