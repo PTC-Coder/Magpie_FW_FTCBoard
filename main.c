@@ -1054,9 +1054,6 @@ void DMA0_IRQHandler()
 	}
 
 
-
-
-
 	blockPtrModuloDMA = (blockPtrModuloDMA+1) & block_ptr_modulo_mask; // wraps to fit in spi write mem
 	offsetDMA = blockPtrModuloDMA*numBytesSDwrite; //adr max is 3*dmaBufflenBytes + dmaBufflenBytes  = 4*dmaBufflenBytes
 	dataBlocksDmaCount+= 1;
@@ -1068,7 +1065,6 @@ void DMA0_IRQHandler()
 	if(delta > 3) { // enter whatever stall threshold you want here; over 16 will cause errors
 		numSDwriteErrors++;
 		dataBlocksConsumedCount = dataBlocksDmaCount-1; // made an error; reset the counter so we dont bother trying to catch up
-
 	}
 
 	// printf("\nRecording Time DMA Blocks: %d \n\n", RECORDING_TIME_DMABLOCKS);
@@ -2030,6 +2026,15 @@ int recordWav(int bit, int sample, int sd_slot)
 
 	init_dma_MXC();
 
+	//Reset all recording related variables
+	count_dma_irq = 0;
+	blockPtrModuloSDbuff=0; // the block pointer into SD memory for the slow-sd buffer scheme
+	offsetSDbuff = 0; // offset in bytes into the SD write memory, for slow-sd scheme
+	blockPtrModuloDMA=0;// the block pointer for reading from the DMA buff for the slow-sd scheme
+	offsetDMA = 0; // offset in bytes for writing the dma memory, for the slow-sd scheme
+	dataBlocksDmaCount = 0;
+	dataBlocksConsumedCount = 0;
+
 //	PWMTimer();
 //	read_TMR0_regs();
 	// note, the following could probably be done with MXC functions
@@ -2037,7 +2042,7 @@ int recordWav(int bit, int sample, int sd_slot)
 	SPI1_DMA_direct |= 0x80000000;// receive dma enable
 
 
-	stall = 1;
+	stall = 2;
 	while(stall) { // stall until a rising edge on slave-sel-B. This is to insure we have no partial writes (1 or 2 bytes) that mess up the dma
 		temp1  = MXC_GPIO_InGet(gpio_in4.port,gpio_in4.mask); // L
 		temp2 =  MXC_GPIO_InGet(gpio_in4.port,gpio_in4.mask); // H
@@ -2045,7 +2050,8 @@ int recordWav(int bit, int sample, int sd_slot)
 
 		//printf("Stalling temp1: %d, temp2: %d.\n",temp1,temp2);
 	}
-	printf("Partial Writes cleared ...\n\n");
+	printf("No Stalling remains. Partial Writes cleared ...\n\n");
+	printf("%d Second(s) of Audio Recording to WAV ...\n\n", set_record_time_s);
 
 	SPI1_CTRL0_direct |= 0x00000001; // start the port (fifo was previously cleared)
 	MXC_DMA_Start(mychannel); // sets bits 0 and 1 of control reg and bit 31 of count reload reg
@@ -2054,10 +2060,10 @@ int recordWav(int bit, int sample, int sd_slot)
 	// in the IRQ handler routine, otherwise it only does a single block transfer
 
 	// magpie_new; write 1 or more blocks, using the slow-sd card recovery scheme
-	u_int32_t bw;
+	u_int32_t bw = 0;
 
-	
-	printf("%d Second(s) of Audio Recording to WAV ...\n\n", set_record_time_s);
+	//bool isFirstloopCount = TRUE;
+		
 	while(count_dma_irq < set_DMA_blocks) 
 	{ // interupts happen here, count_dma_irq increments at fs/dmaBlockSize
 		while((dataBlocksDmaCount - dataBlocksConsumedCount) > 0) 
@@ -2065,9 +2071,13 @@ int recordWav(int bit, int sample, int sd_slot)
 			delta = dataBlocksDmaCount - dataBlocksConsumedCount;
 		}
 		// //MXC_GPIO_OutSet(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
-		f_write(&file, SD_write_buff + offsetSDbuff, numBytesSDwrite, &bw); // # bytes = 3X word length of buffer, 24 bits
-		// //MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test
+		if(dataBlocksConsumedCount > 8)
+		{
+			f_write(&file, SD_write_buff + offsetSDbuff, numBytesSDwrite, &bw); // # bytes = 3X word length of buffer, 24 bits
+		 //MXC_GPIO_OutClr(gpio_outGreenLED.port,gpio_outGreenLED.mask); // timing test			
+		}
 
+		//isFirstloopCount = false;
 		dataBlocksConsumedCount+=1;
 		blockPtrModuloSDbuff = (blockPtrModuloSDbuff+1) & block_ptr_modulo_mask; // wraps before end of sd_write_buff
 		offsetSDbuff = blockPtrModuloSDbuff*numBytesSDwrite;
@@ -2208,7 +2218,7 @@ int main(void)
 	set_sample = fs_384k_1ch;    //(fs_24k_1ch, fs_48k_1ch, fs_96k_1ch, fs_192k_1ch, fs_384k_1ch)
 	set_sd_slot = 0;  //(0, 1, 2, 5, 4, 3)  //The slot order on the physical board from left to right.  0 is near the mic input connector
 	set_gain_ch0 = AFE_CONTROL_GAIN_40dB;   //AFE_CONTROL_GAIN_5db to AFE_CONTROL_GAIN_40dB  increment of 5dB (5, 10, 15, 20, 25, 30, 35, 40)
-	set_recording_time_s(20); //this function will translate to DMA blocks
+	set_recording_time_s(10); //this function will translate to DMA blocks
 
 	//This will start the recording 
 	recording  = 1;
